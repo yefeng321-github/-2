@@ -595,6 +595,7 @@
       <div class="setting-item">
         <label>输出尺寸</label>
         <select id="opt-size">
+          <option value="1080x1080" selected>1080×1080 (1:1)</option>
           <option value="1200x1200">1200×1200 (1:1)</option>
           <option value="1200x900">1200×900 (4:3)</option>
           <option value="1920x1080">1920×1080 (16:9)</option>
@@ -662,10 +663,10 @@
     <div class="tb-sep"></div>
     <div class="tb-group">
       <span class="tb-label">画布</span>
-      <input class="tb-input" id="ed-cvW" type="number" value="1200" onchange="edResizeCanvas()">
+      <input class="tb-input" id="ed-cvW" type="number" value="1080" onchange="edResizeCanvas()">
       <span class="tb-label">×</span>
-      <input class="tb-input" id="ed-cvH" type="number" value="1200" onchange="edResizeCanvas()">
-      <button class="tbtn sm" onclick="edPreset(1200,1200)">1:1</button>
+      <input class="tb-input" id="ed-cvH" type="number" value="1080" onchange="edResizeCanvas()">
+      <button class="tbtn sm" onclick="edPreset(1080,1080)">1:1</button>
       <button class="tbtn sm" onclick="edPreset(1200,900)">4:3</button>
       <button class="tbtn sm" onclick="edPreset(1920,1080)">16:9</button>
     </div>
@@ -988,7 +989,7 @@ try {
 // ═══════════════════════════════════════════════
 //  画布编辑器
 // ═══════════════════════════════════════════════
-let edEls = [], edSelId = null, edIdCtr = 1, edCvW = 1200, edCvH = 1200;
+let edEls = [], edSelId = null, edIdCtr = 1, edCvW = 1080, edCvH = 1080;
 let edDrag = null, edResize = null, edRot = null;
 let edZoomLevel = 1, edCfg = null;
 const edCanvas = $('ed-canvas');
@@ -1006,8 +1007,7 @@ window.openEditor = () => {
   // 同步当前配置到画布
   const { w, h } = getOutputSize();
   edCvW = w; edCvH = h;
-  $('ed-cvW').value = w; $('ed-cvH').value = h;
-  $('ed-bg').value = getBgColor();
+  $('ed-cvW').value = w; $('ed-cvH').value = h;  $('ed-bg').value = getBgColor();
   edCanvas.style.width = w + 'px';
   edCanvas.style.height = h + 'px';
   edCanvas.style.background = getBgColor();
@@ -1058,6 +1058,7 @@ window.edAddText = () => {
   const id = edIdCtr++;
   edEls.push({
     id, type: 'txt', text: '双击编辑文字',
+    isPlaceholder: true,
     x: Math.round(edCvW / 2 - 80), y: Math.round(edCvH / 2 - 15),
     w: 200, h: 44, r: 0, o: 1, z: edEls.length + 1,
     fs: 24, fc: '#000000', bc: '#ffffff', bt: false, bold: false
@@ -1079,7 +1080,13 @@ function edRenderEl(e) {
     div.appendChild(img);
   } else {
     edSetTextStyle(div, e);
-    div.textContent = e.text;
+    // 若是占位符文字，用灰色显示
+    if (e.isPlaceholder) {
+      div.textContent = e.text;
+      div.style.color = '#aaa';
+    } else {
+      div.textContent = e.text;
+    }
     div.addEventListener('dblclick', ev => { ev.stopPropagation(); edStartTextEdit(e.id); });
   }
   ['tl', 'tr', 'bl', 'br'].forEach(c => {
@@ -1194,11 +1201,34 @@ function edStartTextEdit(id) {
   const d = $('eel-' + id);
   d.classList.add('editing');
   d.contentEditable = 'true';
+  // 若是占位符，清空内容并恢复正常颜色
+  if (el.isPlaceholder) {
+    d.textContent = '';
+    d.style.color = el.fc;
+  }
   d.focus();
+  // 移动光标到末尾
+  const range = document.createRange();
+  range.selectNodeContents(d);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
   d.addEventListener('blur', () => {
     d.contentEditable = 'false';
     d.classList.remove('editing');
-    el.text = d.textContent;
+    const typed = d.textContent.trim();
+    if (typed === '') {
+      // 恢复占位符
+      el.text = '双击编辑文字';
+      el.isPlaceholder = true;
+      d.textContent = el.text;
+      d.style.color = '#aaa';
+    } else {
+      el.text = d.textContent;
+      el.isPlaceholder = false;
+      d.style.color = el.fc;
+    }
   }, { once: true });
 }
 
@@ -1281,15 +1311,39 @@ window.edAutoLayout = () => {
   const cols = gridCols(n);
   const rows = Math.ceil(n / cols);
   const pad = getGap();
-  const w = Math.floor((edCvW - pad * (cols + 1)) / cols);
-  const h = Math.floor((edCvH - pad * (rows + 1)) / rows);
-  imgs.forEach((el, i) => {
-    el.x = pad + (i % cols) * (w + pad);
-    el.y = pad + Math.floor(i / cols) * (h + pad);
-    el.w = w; el.h = h; el.r = 0;
+  const cellW = Math.floor((edCvW - pad * (cols + 1)) / cols);
+  const cellH = Math.floor((edCvH - pad * (rows + 1)) / rows);
+
+  // 对每张图保持原始比例，居中放入格子
+  const placed = imgs.map((el, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = pad + col * (cellW + pad); // 格子左上角 x
+    const cy = pad + row * (cellH + pad); // 格子左上角 y
+
+    // 读取图片原始尺寸（先尝试从 DOM img 元素获取，否则用当前宽高比）
+    const domImg = $('eel-' + el.id)?.querySelector('img');
+    const natW = domImg?.naturalWidth || el.w;
+    const natH = domImg?.naturalHeight || el.h;
+    const ir = natW / natH;  // 图片原始宽高比
+    const tr = cellW / cellH; // 格子宽高比
+
+    let dw, dh;
+    if (ir > tr) { dw = cellW; dh = Math.round(cellW / ir); }
+    else         { dh = cellH; dw = Math.round(cellH * ir); }
+
+    // 居中偏移
+    const dx = cx + Math.round((cellW - dw) / 2);
+    const dy = cy + Math.round((cellH - dh) / 2);
+
+    return { el, x: dx, y: dy, w: dw, h: dh };
+  });
+
+  placed.forEach(({ el, x, y, w, h }) => {
+    el.x = x; el.y = y; el.w = w; el.h = h; el.r = 0;
     edSetTransform($('eel-' + el.id), el);
   });
-  edSetStatusMsg('✓ 已自动排列');
+  edSetStatusMsg('✓ 已自动排列（保持原始比例）');
 };
 
 // 缩放
