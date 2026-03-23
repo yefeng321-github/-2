@@ -598,7 +598,7 @@
       <option value="">— 初始化中 —</option>
     </select>
     <label class="field-label">拼图保存到字段（附件）</label>
-    <select id="sel-dst">
+    <select id="sel-dst" onchange="onDstChange()">
       <option value="">— 初始化中 —</option>
     </select>
     <div id="cfg-status" class="status st-info hidden" style="margin-top:8px;">
@@ -873,10 +873,18 @@ async function loadFields(table) {
     if (!att.length) { showStatus('cfg-status', 'warn', '当前表没有附件字段'); return; }
     hideStatus('cfg-status');
     const opts = att.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+
+    // 记住用户当前的选择
+    const prevSrc = $('sel-src').value;
+    const prevDst = $('sel-dst').value;
+
     $('sel-src').innerHTML = opts;
     $('sel-dst').innerHTML = opts;
-    $('sel-src').value = att[0].id;
-    $('sel-dst').value = att.length > 1 ? att[1].id : att[0].id;
+
+    // 如果之前的选择在新字段列表里仍然存在，保持用户选择不变
+    const ids = att.map(f => f.id);
+    $('sel-src').value = ids.includes(prevSrc) ? prevSrc : att[0].id;
+    $('sel-dst').value = ids.includes(prevDst) ? prevDst : (att.length > 1 ? att[1].id : att[0].id);
   } catch (e) { showStatus('cfg-status', 'err', '加载字段失败：' + e.message); }
 }
 
@@ -929,11 +937,20 @@ async function loadImages(recordId) {
 
 window.onSrcChange = () => { if (S.recordId) loadImages(S.recordId); };
 
+// 切换目标字段后，如果已有图片则重新拼接保存到新字段
+window.onDstChange = () => {
+  if (S.images.length && S.recordId) {
+    showStatus('img-status', 'info', '目标字段已切换，重新拼接中…');
+    setTimeout(() => doAutoCollage(), 100);
+  }
+};
+
 // ═══════════════════════════════════════════════
 //  自动拼接核心
 // ═══════════════════════════════════════════════
 window.doAutoCollage = async () => {
   const dstId = $('sel-dst').value;
+  const dstName = $('sel-dst').options[$('sel-dst').selectedIndex]?.text || '';
   if (!S.images.length) { alert('请先选择一行有图片的记录'); return; }
   if (!dstId) { alert('请先选择保存目标字段'); return; }
 
@@ -1006,7 +1023,7 @@ window.doAutoCollage = async () => {
     const field = await table.getField(dstId);
     await field.setValue(S.recordId, file);
     setProg(100, '保存成功！');
-    setTimeout(() => { hideProg(); showStatus('img-status', 'ok', `✓ 拼图已保存！(${cvW}×${cvH})`); }, 700);
+    setTimeout(() => { hideProg(); showStatus('img-status', 'ok', `✓ 已保存到「${dstName}」(${cvW}×${cvH})`); }, 700);
   } catch (e) {
     hideProg();
     showStatus('img-status', 'err', '保存失败：' + e.message);
