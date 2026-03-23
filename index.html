@@ -383,6 +383,23 @@
     border-bottom: 1px solid var(--border-light);
     margin-bottom: 3px;
   }
+  .lib-import-btn {
+    display: block;
+    width: calc(100% - 8px);
+    margin: 4px 4px 6px;
+    padding: 5px 0;
+    background: var(--blue);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    text-align: center;
+    transition: opacity .15s;
+  }
+  .lib-import-btn:hover { opacity: .85; }
   .lib-item {
     padding: 4px 6px;
     cursor: grab;
@@ -680,6 +697,7 @@
       <button class="tbtn sm" onclick="edPreset(1080,1080)">1:1</button>
       <button class="tbtn sm" onclick="edPreset(1200,900)">4:3</button>
       <button class="tbtn sm" onclick="edPreset(1920,1080)">16:9</button>
+      <button class="tbtn sm" onclick="edPreset(1080,1920)">9:16</button>
     </div>
     <div class="tb-sep"></div>
     <div class="tb-group">
@@ -697,6 +715,7 @@
     <!-- 左侧图片库 -->
     <div id="ed-lib">
       <div class="lib-title">图片库</div>
+      <button class="lib-import-btn" onclick="edImportAll()">⬇ 全部导入画布</button>
       <div id="ed-lib-items"></div>
     </div>
 
@@ -918,7 +937,7 @@ window.doAutoCollage = async () => {
   if (!S.images.length) { alert('请先选择一行有图片的记录'); return; }
   if (!dstId) { alert('请先选择保存目标字段'); return; }
 
-  showProg('自动拼接中…', 10, '计算布局');
+  showProg('自动拼接中…', 5, '计算布局');
 
   const n = S.images.length;
   const cols = gridCols(n);
@@ -930,36 +949,54 @@ window.doAutoCollage = async () => {
   const cellW = Math.floor((cvW - pad * (cols + 1)) / cols);
   const cellH = Math.floor((cvH - pad * (rows + 1)) / rows);
 
-  setProg(20, '加载图片…');
+  setProg(15, '下载图片中…');
+
+  // 用 fetch 下载图片转成 blob URL，避免 canvas taint
+  const loadImg = (url) => new Promise(async (res) => {
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => { res(img); };
+      img.onerror = () => res(null);
+      img.src = blobUrl;
+    } catch {
+      // fetch 失败则直接用 url + crossOrigin 兜底
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => res(img);
+      img.onerror = () => res(null);
+      img.src = url;
+    }
+  });
+
+  const imgEls = await Promise.all(S.images.map(img => loadImg(img.url)));
+  setProg(60, '合成图片…');
+
   const off = document.createElement('canvas');
   off.width = cvW; off.height = cvH;
   const ctx = off.getContext('2d');
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, cvW, cvH);
 
-  await Promise.all(S.images.map((img, i) => new Promise(res => {
+  imgEls.forEach((el, i) => {
+    if (!el) return;
     const col = i % cols;
     const row = Math.floor(i / cols);
     const cx = pad + col * (cellW + pad);
     const cy = pad + row * (cellH + pad);
-    const el = new Image();
-    el.crossOrigin = 'anonymous';
-    el.onload = () => {
-      const ir = el.naturalWidth / el.naturalHeight;
-      const tr = cellW / cellH;
-      let dw, dh;
-      if (ir > tr) { dw = cellW; dh = cellW / ir; }
-      else { dh = cellH; dw = cellH * ir; }
-      const dx = cx + (cellW - dw) / 2;
-      const dy = cy + (cellH - dh) / 2;
-      ctx.drawImage(el, 0, 0, el.naturalWidth, el.naturalHeight, dx, dy, dw, dh);
-      res();
-    };
-    el.onerror = () => res();
-    el.src = img.url;
-  })));
+    const ir = el.naturalWidth / el.naturalHeight;
+    const tr = cellW / cellH;
+    let dw, dh;
+    if (ir > tr) { dw = cellW; dh = cellW / ir; }
+    else { dh = cellH; dw = cellH * ir; }
+    const dx = cx + (cellW - dw) / 2;
+    const dy = cy + (cellH - dh) / 2;
+    ctx.drawImage(el, 0, 0, el.naturalWidth, el.naturalHeight, dx, dy, dw, dh);
+  });
 
-  setProg(70, '保存到飞书…');
+  setProg(80, '保存到飞书…');
   try {
     const blob = await new Promise((res, rej) =>
       off.toBlob(b => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png')
@@ -971,7 +1008,8 @@ window.doAutoCollage = async () => {
     setProg(100, '保存成功！');
     setTimeout(() => { hideProg(); showStatus('img-status', 'ok', `✓ 拼图已保存！(${cvW}×${cvH})`); }, 700);
   } catch (e) {
-    hideProg(); alert('保存失败：' + e.message);
+    hideProg();
+    showStatus('img-status', 'err', '保存失败：' + e.message);
   }
 };
 
@@ -991,10 +1029,13 @@ try {
       S.table = await bitable.base.getTable(data.tableId);
       await loadFields(S.table);
     }
-    if (data.recordId && data.recordId !== S.recordId) {
+    if (data.recordId) {
+      const isNewRecord = data.recordId !== S.recordId;
       S.recordId = data.recordId;
       S.clickedFieldId = data.fieldId || null;
-      await loadImages(data.recordId);
+      if (isNewRecord) {
+        await loadImages(data.recordId);
+      }
     }
   });
 
@@ -1072,6 +1113,29 @@ function edAddImage(url, name, x, y, w, h) {
   edSelect(id);
   edUpdateStatus();
 }
+
+// 一键导入所有图片并自动排列
+window.edImportAll = () => {
+  if (!window._edImgs?.length) return;
+  // 清除已有图片元素，保留文字元素
+  edEls.filter(e => e.type === 'img').forEach(e => $('eel-' + e.id)?.remove());
+  edEls = edEls.filter(e => e.type !== 'img');
+  edSelId = null;
+  $('ed-no-sel').style.display = '';
+  $('ed-prop-panel').style.display = 'none';
+
+  // 先添加所有图片（临时位置）
+  window._edImgs.forEach((img, i) => {
+    const id = edIdCtr++;
+    edEls.push({ id, type: 'img', url: img.url, name: img.name,
+      x: 0, y: 0, w: 200, h: 150, r: 0, o: 1, z: edEls.length + 1 });
+    edRenderEl(edEls[edEls.length - 1]);
+  });
+  edUpdateStatus();
+  // 自动排列（保持比例）
+  edAutoLayout();
+  edSetStatusMsg(`✓ 已导入 ${window._edImgs.length} 张图片并自动排列`);
+};
 
 window.edAddText = () => {
   const id = edIdCtr++;
@@ -1391,51 +1455,63 @@ function edApplyZoom() {
   $('zoom-label').textContent = Math.round(edZoomLevel * 100) + '%';
 }
 
-// 渲染到 Canvas 并保存
+// 渲染到 Canvas 并保存 - 用 fetch+blobURL 避免跨域 taint
 async function edRenderBlob() {
-  return new Promise((res, rej) => {
-    const off = document.createElement('canvas');
-    off.width = edCvW; off.height = edCvH;
-    const ctx = off.getContext('2d');
-    ctx.fillStyle = $('ed-bg').value;
-    ctx.fillRect(0, 0, edCvW, edCvH);
-    const sorted = [...edEls].sort((a, b) => (a.z || 1) - (b.z || 1));
-    let pending = sorted.filter(e => e.type === 'img').length;
-    const finish = () => {
-      sorted.forEach(el => {
-        if (el.type !== 'txt') return;
-        ctx.save();
-        ctx.globalAlpha = el.o;
-        ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
-        ctx.rotate(el.r * Math.PI / 180);
-        if (!el.bt) { ctx.fillStyle = el.bc || '#fff'; ctx.fillRect(-el.w / 2, -el.h / 2, el.w, el.h); }
-        ctx.font = (el.bold ? 'bold ' : '') + el.fs + 'px "PingFang SC", "Microsoft YaHei", sans-serif';
-        ctx.fillStyle = el.fc || '#000';
-        ctx.textBaseline = 'middle';
-        const lines = el.text.split('\n'), lh = el.fs * 1.4, tot = lines.length * lh;
-        lines.forEach((l, i) => ctx.fillText(l, -el.w / 2 + 6, -tot / 2 + lh * (i + 0.5)));
-        ctx.restore();
-      });
-      off.toBlob(b => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png');
-    };
-    if (pending === 0) { finish(); return; }
-    sorted.forEach(el => {
-      if (el.type !== 'img') return;
+  const off = document.createElement('canvas');
+  off.width = edCvW; off.height = edCvH;
+  const ctx = off.getContext('2d');
+  ctx.fillStyle = $('ed-bg').value;
+  ctx.fillRect(0, 0, edCvW, edCvH);
+  const sorted = [...edEls].sort((a, b) => (a.z || 1) - (b.z || 1));
+
+  // 加载图片（fetch blob 绕过 taint）
+  const loadImg = (url) => new Promise(async (res) => {
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => res(img);
+      img.onerror = () => res(null);
+      img.src = blobUrl;
+    } catch {
       const img = new Image();
       img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        ctx.save();
-        ctx.globalAlpha = el.o;
-        ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
-        ctx.rotate(el.r * Math.PI / 180);
-        ctx.drawImage(img, -el.w / 2, -el.h / 2, el.w, el.h);
-        ctx.restore();
-        if (--pending === 0) finish();
-      };
-      img.onerror = () => { if (--pending === 0) finish(); };
-      img.src = el.url;
-    });
+      img.onload = () => res(img);
+      img.onerror = () => res(null);
+      img.src = url;
+    }
   });
+
+  const imgMap = {};
+  await Promise.all(
+    sorted.filter(e => e.type === 'img').map(async e => {
+      imgMap[e.id] = await loadImg(e.url);
+    })
+  );
+
+  sorted.forEach(el => {
+    ctx.save();
+    ctx.globalAlpha = el.o;
+    ctx.translate(el.x + el.w / 2, el.y + el.h / 2);
+    ctx.rotate(el.r * Math.PI / 180);
+    if (el.type === 'img') {
+      const img = imgMap[el.id];
+      if (img) ctx.drawImage(img, -el.w / 2, -el.h / 2, el.w, el.h);
+    } else if (el.type === 'txt' && !el.isPlaceholder) {
+      if (!el.bt) { ctx.fillStyle = el.bc || '#fff'; ctx.fillRect(-el.w / 2, -el.h / 2, el.w, el.h); }
+      ctx.font = (el.bold ? 'bold ' : '') + el.fs + 'px "PingFang SC", "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = el.fc || '#000';
+      ctx.textBaseline = 'middle';
+      const lines = el.text.split('\n'), lh = el.fs * 1.4, tot = lines.length * lh;
+      lines.forEach((l, i) => ctx.fillText(l, -el.w / 2 + 6, -tot / 2 + lh * (i + 0.5)));
+    }
+    ctx.restore();
+  });
+
+  return new Promise((res, rej) =>
+    off.toBlob(b => b ? res(b) : rej(new Error('toBlob 失败')), 'image/png')
+  );
 }
 
 window.edSave = async () => {
