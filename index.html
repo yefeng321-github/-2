@@ -396,8 +396,7 @@
 
   /* 画布区 */
   #ed-canvas-wrap {
-    flex: 1; overflow: hidden;
-    display: flex; align-items: center; justify-content: center;
+    flex: 1; overflow: auto;
     background: #dde0e6;
     background-image:
       linear-gradient(rgba(0,0,0,.06) 1px, transparent 1px),
@@ -406,11 +405,21 @@
     user-select: none;
     position: relative;
   }
+  #ed-canvas-scroller {
+    min-width: 100%;
+    min-height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px;
+    box-sizing: border-box;
+  }
   #ed-canvas {
     position: relative;
     box-shadow: 0 4px 32px rgba(0,0,0,.18);
     overflow: hidden;
-    transition: width .2s, height .2s;
+    flex-shrink: 0;
+    transform-origin: top left;
   }
 
   /* 画布元素 */
@@ -523,6 +532,8 @@
     position: absolute;
     bottom: 12px; right: 12px;
     display: flex; align-items: center; gap: 4px;
+    z-index: 100;
+    pointer-events: all;
   }
   .zoom-btn {
     width: 28px; height: 28px;
@@ -691,9 +702,11 @@
 
     <!-- 画布 -->
     <div id="ed-canvas-wrap">
-      <div id="ed-canvas" style="width:1200px;height:1200px;background:#fff;"></div>
+      <div id="ed-canvas-scroller">
+        <div id="ed-canvas" style="width:1080px;height:1080px;background:#fff;"></div>
+      </div>
 
-      <!-- 缩放控件 -->
+      <!-- 缩放控件：绝对定位在wrap右下，不随画布滚动 -->
       <div id="zoom-ctrl">
         <div class="zoom-btn" onclick="edZoom(-1)">－</div>
         <div class="zoom-label" id="zoom-label">100%</div>
@@ -882,12 +895,15 @@ async function loadImages(recordId) {
     $('btn-editor').classList.remove('hidden');
 
     // 判断是否点击的是目标字段（避免循环触发）
+    // 只有当明确点击了目标字段列时才跳过自动拼接，其他情况都自动触发
     const dstId = $('sel-dst').value;
-    if (S.clickedFieldId && S.clickedFieldId === dstId) {
+    const clickedDst = S.clickedFieldId && S.clickedFieldId === dstId;
+    if (clickedDst) {
       showStatus('img-status', 'ok', `✓ 已加载 ${S.images.length} 张图片`);
     } else {
-      showStatus('img-status', 'ok', `✓ 已加载 ${S.images.length} 张图片，开始自动拼接…`);
-      doAutoCollage();
+      showStatus('img-status', 'ok', `✓ 已加载 ${S.images.length} 张图片，自动拼接中…`);
+      // 延迟一帧确保 UI 先更新
+      setTimeout(() => doAutoCollage(), 100);
     }
   } catch (e) { showStatus('img-status', 'err', '加载失败：' + e.message); }
 }
@@ -1007,9 +1023,11 @@ window.openEditor = () => {
   // 同步当前配置到画布
   const { w, h } = getOutputSize();
   edCvW = w; edCvH = h;
-  $('ed-cvW').value = w; $('ed-cvH').value = h;  $('ed-bg').value = getBgColor();
+  $('ed-cvW').value = w; $('ed-cvH').value = h;
+  $('ed-bg').value = getBgColor();
   edCanvas.style.width = w + 'px';
   edCanvas.style.height = h + 'px';
+  edCanvas.style.zoom = '';
   edCanvas.style.background = getBgColor();
 
   S.images.forEach((img, i) => {
@@ -1024,7 +1042,8 @@ window.openEditor = () => {
   $('editor').classList.add('open');
   $('sidebar').style.display = 'none';
   edUpdateStatus();
-  edZoomFit();
+  // 等 DOM 渲染完毕再计算适应缩放
+  requestAnimationFrame(() => edZoomFit());
 };
 
 window.closeEditor = () => {
@@ -1040,9 +1059,9 @@ edCanvas.addEventListener('drop', e => {
   if (idx === '') return;
   const img = window._edImgs[+idx];
   const r = edCanvas.getBoundingClientRect();
-  const scale = edZoomLevel;
-  const x = (e.clientX - r.left) / scale - 100;
-  const y = (e.clientY - r.top) / scale - 75;
+  // CSS zoom 下 getBoundingClientRect 已是屏幕坐标，需除以 zoom 换算为画布坐标
+  const x = (e.clientX - r.left) / edZoomLevel - 100;
+  const y = (e.clientY - r.top) / edZoomLevel - 75;
   edAddImage(img.url, img.name, x, y, 200, 150);
 });
 
@@ -1292,10 +1311,11 @@ window.edDeleteSelected = () => {
 
 // 画布尺寸
 window.edResizeCanvas = () => {
-  edCvW = parseInt($('ed-cvW').value) || 1200;
-  edCvH = parseInt($('ed-cvH').value) || 1200;
+  edCvW = parseInt($('ed-cvW').value) || 1080;
+  edCvH = parseInt($('ed-cvH').value) || 1080;
   edCanvas.style.width = edCvW + 'px';
   edCanvas.style.height = edCvH + 'px';
+  edCanvas.style.zoom = edZoomLevel;
   edUpdateStatus();
 };
 window.edPreset = (w, h) => {
@@ -1346,10 +1366,10 @@ window.edAutoLayout = () => {
   edSetStatusMsg('✓ 已自动排列（保持原始比例）');
 };
 
-// 缩放
+// 缩放 - 用 CSS zoom，真正影响布局尺寸，画布可滚动
 window.edZoom = dir => {
-  const steps = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
-  let idx = steps.findIndex(s => s >= edZoomLevel);
+  const steps = [0.15, 0.2, 0.25, 0.33, 0.4, 0.5, 0.6, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  let idx = steps.findIndex(s => Math.round(s * 100) >= Math.round(edZoomLevel * 100));
   if (idx === -1) idx = steps.length - 1;
   idx = Math.max(0, Math.min(steps.length - 1, idx + dir));
   edZoomLevel = steps[idx];
@@ -1357,13 +1377,17 @@ window.edZoom = dir => {
 };
 window.edZoomFit = () => {
   const wrap = $('ed-canvas-wrap');
-  const ww = wrap.clientWidth - 48, wh = wrap.clientHeight - 48;
+  const ww = wrap.clientWidth - 80, wh = wrap.clientHeight - 80;
   edZoomLevel = Math.min(ww / edCvW, wh / edCvH, 1);
+  edZoomLevel = Math.round(edZoomLevel * 100) / 100;
   edApplyZoom();
 };
 function edApplyZoom() {
-  edCanvas.style.transform = `scale(${edZoomLevel})`;
-  edCanvas.style.transformOrigin = 'center center';
+  // CSS zoom: 真正缩放布局，滚动容器可正常滚动
+  edCanvas.style.zoom = edZoomLevel;
+  edCanvas.style.transform = '';
+  edCanvas.style.marginBottom = '';
+  edCanvas.style.marginRight = '';
   $('zoom-label').textContent = Math.round(edZoomLevel * 100) + '%';
 }
 
