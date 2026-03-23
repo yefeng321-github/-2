@@ -487,9 +487,15 @@
     min-width: 50px; min-height: 24px;
     white-space: pre-wrap; word-break: break-all;
     line-height: 1.4;
+    overflow: hidden;
+  }
+  .canvas-text.editing {
+    outline: 2px solid var(--green);
+    cursor: text;
+    overflow: visible;
+    height: auto !important;
   }
   .canvas-text.selected { outline: 2px solid #7b61ff; }
-  .canvas-text.editing { outline: 2px solid var(--green); cursor: text; }
 
   /* 右侧属性面板 */
   #ed-props {
@@ -1314,21 +1320,39 @@ function edStartTextEdit(id) {
   const sel = window.getSelection();
   sel.removeAllRanges();
   sel.addRange(range);
+
+  // 输入时实时同步高度到数据模型
+  const onInput = () => {
+    // scrollHeight 是内容实际高度（editing 状态下 height:auto 生效）
+    const newH = Math.max(d.scrollHeight, 24);
+    el.h = newH;
+    d.style.height = newH + 'px';
+    edUpdateProps();
+  };
+  d.addEventListener('input', onInput);
+
   d.addEventListener('blur', () => {
+    d.removeEventListener('input', onInput);
     d.contentEditable = 'false';
     d.classList.remove('editing');
+    // 失焦后固定实际高度，防止塌陷
+    const finalH = Math.max(d.scrollHeight, 24);
+    el.h = finalH;
+    d.style.height = finalH + 'px';
     const typed = d.textContent.trim();
     if (typed === '') {
-      // 恢复占位符
       el.text = '双击编辑文字';
       el.isPlaceholder = true;
       d.textContent = el.text;
       d.style.color = '#aaa';
+      d.style.height = el.fs * 1.4 + 8 + 'px';
+      el.h = el.fs * 1.4 + 8;
     } else {
       el.text = d.textContent;
       el.isPlaceholder = false;
       d.style.color = el.fc;
     }
+    edUpdateProps();
   }, { once: true });
 }
 
